@@ -1,3 +1,7 @@
+# weird language, mostly a haskell test drive
+
+Almost able to parse all of this
+```c
 struct Point {
     int x;
     int y;
@@ -26,3 +30,4 @@ fun main(): int {
 
     return 0;
 }
+```

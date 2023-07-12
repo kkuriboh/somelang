@@ -1,25 +1,28 @@
--- TODO: refactor everything
-{-# LANGUAGE OverloadedStrings, ApplicativeDo #-}
+{-# LANGUAGE ApplicativeDo #-}
+{-# LANGUAGE OverloadedStrings #-}
 
 module Parser where
 
-import Common (Id(Id))
+import Common
 import Control.Applicative
-import Data.Attoparsec.Text hiding (take)
-import Data.Char (isSpace, ord)
-import qualified Data.Text as T
+import Data.Attoparsec.Text hiding (take, takeWhile)
+import Data.Attoparsec.Text qualified as P
+import Data.Char (isDigit, isLetter, isSpace)
+import Data.Text qualified as T
 import Expr
 import Stmt
 
 ws :: Parser ()
 ws = skipSpace
 
+ws1 :: Parser ()
+ws1 = skip isSpace *> ws
+
 intLiteral :: Parser Expr
 intLiteral = IntLiteral <$> decimal
 
 stringLiteral :: Parser Expr
-stringLiteral =
-  (StringLiteral . T.pack) <$> (char '"' *> many anyChar <* char '"')
+stringLiteral = (StringLiteral . T.pack) <$> (char '"' *> manyTill anyChar (char '"'))
 
 boolLiteral :: Parser Expr
 boolLiteral =
@@ -30,174 +33,199 @@ parseLiteral = intLiteral <|> stringLiteral <|> boolLiteral
 
 parseId :: Parser Id
 parseId = do
-  first <- takeWhile1 (nonDigit . ord)
-  second <- takeTill isSpace <* ws
+  first <- takeWhile1 isLetter
+  second <- P.takeWhile (\c -> isLetter c || isDigit c || c == '_')
   return (Id $ first `T.append` second)
-  where
-    nonDigit c
-      | (c >= 65 && c <= 90) || (c >= 97 && c <= 122) = True
-      | otherwise = False
+
+parseIdent :: Parser Expr
+parseIdent = Ident <$> parseId
 
 parseApplication :: Parser Expr
 parseApplication = do
-  id' <- parseId
-  "(" *> ws
-  params <- many parseExpr <* ws <* char ','
-  ")" *> ws
-  return (Application (id', params))
+  id' <- parseId <* ws
+  char '(' <* ws
+  params <- parseExpr `sepBy` (ws *> char ',' <* ws)
+  char ')'
+  return $ Application (id', params)
 
 parseBinOperator :: Parser BinOp
-parseBinOperator = operator <$> anyChar
-  where
-    operator '+' = Add
-    operator '-' = Sub
-    operator '*' = Mul
-    operator '/' = Div
-    operator '%' = Mod
-    operator _ = error "invalid operator"
+parseBinOperator =
+  choice
+    [ char '+' *> pure Add,
+      char '-' *> pure Sub,
+      char '*' *> pure Mul,
+      char '/' *> pure Div,
+      char '%' *> pure Mod
+    ]
 
 parseBinOperation :: Parser Expr
 parseBinOperation = do
   left <- customExpr <* ws
   operator <- parseBinOperator <* ws
-  right <- customExpr <* ws
-  return (BinOperation {left, operator, right})
+  right <- customExpr
+  return $ BinOperation {left, operator, right}
   where
-    customExpr = choice [IntLiteral <$> decimal, Ident <$> parseId]
+    customExpr = intLiteral <|> parseIdent
 
 parseBoolOperator :: Parser BoolOp
-parseBoolOperator = operator <$> many anyChar
-  where
-    operator "=" = Eq
-    operator "!=" = Neq
-    operator "||" = Or
-    operator "^" = Xor
-    operator "&&" = And
-    operator "<" = LeT
-    operator ">" = GeT
-    operator "<=" = Leq
-    operator ">=" = Geq
-    operator _ = error "invalid operator"
+parseBoolOperator =
+  choice
+    [ "==" *> pure Eq,
+      "!=" *> pure Neq,
+      "||" *> pure Or,
+      "^" *> pure Xor,
+      "&&" *> pure And,
+      "<=" *> pure Leq,
+      ">=" *> pure Geq,
+      "<" *> pure LeT,
+      ">" *> pure GeT
+    ]
 
+-- TODO: implement factor "()"
 parseBoolOperation :: Parser Expr
 parseBoolOperation = do
   left <- customExpr <* ws
   operator' <- parseBoolOperator <* ws
-  right <- customExpr <* ws
-  return (BooleanOperation {left, operator', right})
+  right <- customExpr
+  return $ BooleanOperation {left, operator', right}
   where
-    customExpr = choice [boolLiteral, Ident <$> parseId, parseBoolOperation]
+    customExpr =
+      choice
+        [ parseBinOperation,
+          parseLiteral,
+          parseStructInstance,
+          parseApplication,
+          -- parseBoolOperation, FIXME: infinite loop
+          parseIdent
+        ]
 
 parseStructInstance :: Parser Expr
 parseStructInstance = do
   typename <- Just <$> parseId <* ws <|> (\_ -> Nothing) <$> char '.'
-  "{" *> ws
-  fields <- many field
-  "}" *> ws
-  return (StructInstance {typename, fields})
+  char '{' *> ws
+  fields <- manyTill field' (char '}') <* ws
+  return $ StructInstance {typename, fields}
   where
-    field = do
-      id' <- char '.' *> parseId <* ws <* char '=' <* ws
-      expr <- parseExpr <* ws <* char ';' <* ws
+    field' = do
+      id' <- char '.' *> parseId <* ws
+      char '=' *> ws
+      expr <- parseExpr <* ws
+      char ';' *> ws
       return ((id', expr))
+
+parseArrInstance :: Parser Expr
+parseArrInstance = do
+  char '[' *> ws
+  values <- parseExpr `sepBy` (ws <* char ',' <* ws) <* ws
+  char ']' *> ws
+  return $ ArrInstance values
 
 parseExpr :: Parser Expr
 parseExpr =
   choice
-    [ Ident <$> parseId
-    , parseLiteral
-    , parseApplication
-    , parseBinOperation
-    , parseBoolOperation
-    , parseStructInstance
+    [ parseBinOperation,
+      parseBoolOperation,
+      parseLiteral,
+      parseStructInstance,
+      parseArrInstance,
+      parseApplication,
+      parseIdent
     ]
 
 parseStmt :: Parser Stmt
 parseStmt =
   choice
-    [ parseIf
-    , Expression <$> parseExpr
-    , Block <$> parseBlock
-    , parseVar
-    , parseFor
-    , parseWhile
-    , parseFuncDef
-    , parseStructDef
+    [ parseIf,
+      parseFor,
+      parseWhile,
+      parseFuncDef,
+      parseStructDef,
+      parseReturn,
+      Expression <$> parseExpr <* ws <* char ';',
+      parseVar,
+      Block <$> parseBlock
     ]
+    <* ws
 
 parseVar :: Parser Stmt
 parseVar = do
-  typeId <- parseId <* ws
+  typeId <- parseId
+  arr <- ("[]" <|> ws *> pure "") <* ws1
+  let tid = case typeId of
+        Id (x) -> Id (x `T.append` arr)
+
   ident <- parseId <* ws
+  char '=' *> ws
   val <- parseExpr <* ws <* char ';'
-  return (Var {typeId, ident, val})
+  return $ Var {typeId = tid, ident, val}
 
 parseBlock :: Parser Block
 parseBlock = do
-  "{" *> ws
-  stmts <- many parseStmt <* ws
-  "}" *> ws
+  char '{' *> ws
+  stmts <- manyTill (parseStmt <* ws) (char '}' *> ws)
   return stmts
 
 parseIf :: Parser Stmt
 parseIf = do
-  "if" *> ws
-  cond <- parseExpr <* ws
+  "if" *> ws1
+  cond <- parseBoolOperation <* ws1
   if_block <- parseBlock <* ws
-  "else" *> ws
-  else_block <- parseBlock <* ws
-  return (If {cond, body = if_block, else' = Just else_block})
+  else_block <-
+    Just <$> ("else" *> ws *> parseBlock <* ws) <|> (\_ -> Nothing) <$> ws
+  return $ If {cond, body = if_block, else' = else_block}
 
 parseFor :: Parser Stmt
 parseFor = do
-  "for" *> ws
-  ident <- parseId <* ws
-  "in" *> ws
+  "for" *> ws1
+  ident <- parseId <* ws1
+  "in" *> ws1
   iterator <- parseId <* ws
   body <- parseBlock <* ws
-  return (ForLoop {forRange = (ident, iterator), body})
+  return $ ForLoop {forRange = (ident, iterator), body}
 
 parseWhile :: Parser Stmt
 parseWhile = do
   "while" *> ws
-  cond <- (boolLiteral <|> Ident <$> parseId) <* ws
+  cond <- (boolLiteral <|> parseIdent <|> parseBoolOperation) <* ws
   body <- parseBlock
-  return (While {cond, body})
+  return $ While {cond, body}
 
 parseFuncDef :: Parser Stmt
 parseFuncDef = do
   "fun" *> ws
   name <- parseId <* ws
   char '(' *> ws
-  params <- many field
-  char ')' *> ws *> char ':'
-  typ <- parseId <* ws
+  fields' <- field `sepBy` (ws <* char ',' <* ws)
+  char ')' *> ws *> char ':' <* ws
+  typeId <- parseId <* ws
   body <- parseBlock
-  return (FuncDef (name, params, typ, body))
-
+  return $ FuncDef {name, fields', typeId, body}
   where
     field = do
-      typ <- parseId <* ws
-      nam <- parseId <* ws <* char ','
+      typ <- parseId <* ws1
+      nam <- parseId
       return ((typ, nam))
 
 parseStructDef :: Parser Stmt
 parseStructDef = do
-  "struct" *> ws
-  name <- parseId <* ws
+  name <- "struct" *> ws1 *> parseId <* ws
   char '{' *> ws
-  fields' <- many field
-  char '}' *> ws
-  return (StructDef {name, fields'})
-
+  fields' <- manyTill field (char '}' <* ws)
+  return $ StructDef {name, fields'}
   where
     field = do
-      typ <- parseId <* ws
-      nam <- parseId <* ws <* char ';'
+      typ <- parseId <* ws1
+      nam <- parseId <* ws <* char ';' <* ws
       return ((typ, nam))
 
 parseReturn :: Parser Stmt
 parseReturn = Return <$> ("return" *> ws *> parseExpr <* ws <* char ';')
 
-runParser :: T.Text -> Either String Stmt
-runParser t = parseOnly parseStmt t
+parseTopLevel :: Parser Stmt
+parseTopLevel = parseStructDef <|> parseFuncDef
+
+runParser :: T.Text -> Either String [Stmt]
+runParser = parseOnly (many parseTopLevel)
+
+run :: T.Text -> Parser a -> Either String a
+run = flip parseOnly

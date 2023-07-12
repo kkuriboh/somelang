@@ -10,19 +10,20 @@ data Expr
   | Application (Id, [Expr])
   | Ident Id
   | BinOperation
-      { left :: Expr
-      , operator :: BinOp
-      , right :: Expr
+      { left :: Expr,
+        operator :: BinOp,
+        right :: Expr
       }
   | BooleanOperation
-      { left :: Expr
-      , operator' :: BoolOp
-      , right :: Expr
+      { left :: Expr,
+        operator' :: BoolOp,
+        right :: Expr
       }
   | StructInstance
-      { typename :: Maybe Id
-      , fields :: [(Id, Expr)]
+      { typename :: Maybe Id,
+        fields :: [(Id, Expr)]
       }
+  | ArrInstance [Expr]
   deriving (Show, Eq)
 
 data BinOp
